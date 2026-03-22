@@ -75,14 +75,8 @@ errorDismiss.addEventListener('click', resetToUpload);
 
 // Functions
 function handleFileSelect(file) {
-    // Block files larger than 4 MB before hitting Vercel's limit
-    const MAX_SIZE_MB = 4;
-    if (file.size > MAX_SIZE_MB * 1024 * 1024) {
-        showError(`PDF is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Please upload a PDF smaller than ${MAX_SIZE_MB} MB.`);
-        return;
-    }
     selectedFile = file;
-    fileName.textContent = file.name;
+    fileName.textContent = `${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
     uploadArea.classList.add('has-file');
     generateBtn.disabled = false;
 }
@@ -122,26 +116,45 @@ async function generateQuiz() {
     formData.append('difficulty', difficulty);
 
     try {
-        showLoading('Analyzing PDF content...');
+        showLoading('Reading PDF in browser...');
 
-        const response = await fetch('/api/generate-quiz', {
+        // Step 1: Extract text client-side using PDF.js
+        // This avoids Vercel's 4.5MB binary upload limit — we only send text to the server
+        const arrayBuffer = await selectedFile.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+        let pdfText = '';
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+            const page = await pdf.getPage(pageNum);
+            const content = await page.getTextContent();
+            const pageText = content.items.map(item => item.str).join(' ');
+            pdfText += pageText + '\n';
+        }
+
+        if (!pdfText.trim() || pdfText.trim().length < 100) {
+            throw new Error('Could not extract text from this PDF. It may be a scanned image. Please use a text-based PDF.');
+        }
+
+        showLoading('Generating questions with AI...');
+
+        // Step 2: Send only the extracted text (not the binary file) to the server
+        const response = await fetch('/api/generate-quiz-text', {
             method: 'POST',
-            body: formData
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                pdf_text: pdfText,
+                num_questions: numQuestions,
+                difficulty: difficulty
+            })
         });
 
-        showLoading('Generating questions...');
-
-        // Safely parse — Vercel can return plain text (e.g. "Request Entity Too Large")
-        // which breaks response.json() and causes "Unexpected token R" error
+        // Safely parse response
         const contentType = response.headers.get('content-type') || '';
         let data;
         if (contentType.includes('application/json')) {
             data = await response.json();
         } else {
             const text = await response.text();
-            if (response.status === 413 || text.toLowerCase().includes('too large') || text.toLowerCase().includes('entity')) {
-                throw new Error('PDF is too large for the server. Please upload a smaller PDF (under 4 MB).');
-            }
             throw new Error(text || `Server error (${response.status}). Please try again.`);
         }
 

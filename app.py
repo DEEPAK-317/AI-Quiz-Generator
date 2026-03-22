@@ -384,5 +384,76 @@ def generate_quiz():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/generate-quiz-text", methods=["POST"])
+def generate_quiz_from_text():
+    """Generate quiz from text extracted client-side (bypasses Vercel upload size limit)"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data received"}), 400
+
+    pdf_text = data.get("pdf_text", "").strip()
+    num_questions = int(data.get("num_questions", 5))
+    difficulty = data.get("difficulty", "medium").lower()
+
+    if not pdf_text:
+        return jsonify({"error": "No text provided"}), 400
+
+    if len(pdf_text) < 100:
+        return jsonify({"error": "PDF content is too short. Please upload a PDF with more text."}), 400
+
+    if num_questions < 1 or num_questions > 50:
+        return jsonify({"error": "Number of questions must be between 1 and 50"}), 400
+
+    if difficulty not in ["easy", "medium", "hard"]:
+        return jsonify({"error": "Difficulty must be easy, medium, or hard"}), 400
+
+    try:
+        # Demo mode fallback
+        if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
+            demo_questions = generate_demo_questions(num_questions, difficulty)
+            return jsonify({
+                "questions": demo_questions,
+                "demo_mode": True,
+                "message": "Running in demo mode. Add your Gemini API key for real AI-generated questions.",
+            })
+
+        # Split text into chunks and generate questions
+        chunks = split_text_into_chunks(pdf_text)
+        questions_per_chunk = max(1, num_questions // len(chunks))
+        extra = num_questions % len(chunks)
+        all_questions = []
+
+        for i, chunk in enumerate(chunks):
+            chunk_questions = questions_per_chunk + (1 if i < extra else 0)
+            if len(all_questions) >= num_questions:
+                break
+            remaining = num_questions - len(all_questions)
+            chunk_questions = min(chunk_questions, remaining)
+
+            prompt = build_prompt(chunk, chunk_questions, difficulty)
+            response = call_gemini(prompt)
+
+            if response:
+                questions = parse_questions_from_response(response)
+                all_questions.extend(questions)
+
+        all_questions = all_questions[:num_questions]
+        for q in all_questions:
+            q["difficulty"] = difficulty
+
+        if not all_questions:
+            return jsonify({"error": "Failed to generate questions. Please try again."}), 500
+
+        return jsonify({
+            "questions": all_questions,
+            "demo_mode": False,
+            "total_generated": len(all_questions),
+        })
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

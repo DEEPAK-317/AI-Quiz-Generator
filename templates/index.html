@@ -125,6 +125,12 @@
         </section>
     </div>
 
+    <!-- PDF.js for client-side text extraction (bypasses Vercel's 4.5MB upload limit) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        // Set PDF.js worker path
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
     <script src="/static/script.js"></script>
 </body>
 </html>
