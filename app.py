@@ -12,7 +12,20 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Vercel has a 4.5MB request body limit — we set 4MB to stay safely below it
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # 4 MB
+
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    """Return JSON error when uploaded file exceeds size limit"""
+    return jsonify({
+        "error": "PDF file is too large. Please upload a file smaller than 4 MB."
+    }), 413
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 
 def extract_text_from_pdf(pdf_file):
@@ -39,44 +52,46 @@ def split_text_into_chunks(text, chunk_size=2000, overlap=200):
     return chunks
 
 
-def call_openrouter(prompt, model="openrouter/hunter-alpha"):
-    """Call OpenRouter API to generate questions"""
-    if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "your_openrouter_api_key_here":
+def call_gemini(prompt):
+    """Call Google Gemini API to generate questions"""
+    if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
         return None
 
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:5000",
-        "X-Title": "Quiz Generator",
     }
 
+    system_instruction = "You are a quiz generation expert. Generate questions in valid JSON array format only. No markdown, no explanation."
+
     data = {
-        "model": model,
-        "messages": [
+        "system_instruction": {
+            "parts": [{"text": system_instruction}]
+        },
+        "contents": [
             {
-                "role": "system",
-                "content": "You are a quiz generation expert. Generate questions in valid JSON array format only. No markdown, no explanation.",
-            },
-            {"role": "user", "content": prompt},
+                "role": "user",
+                "parts": [{"text": prompt}]
+            }
         ],
-        "temperature": 0.7,
-        "max_tokens": 4000,
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 4000,
+        },
     }
 
     try:
         response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
+            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
             headers=headers,
             json=data,
             timeout=60,
         )
         response.raise_for_status()
         result = response.json()
-        content = result["choices"][0]["message"]["content"]
+        content = result["candidates"][0]["content"]["parts"][0]["text"]
         return content
     except Exception as e:
-        print(f"OpenRouter API error: {e}")
+        print(f"Gemini API error: {e}")
         return None
 
 
@@ -305,15 +320,15 @@ def generate_quiz():
 
         # Check if API key is available
         if (
-            not OPENROUTER_API_KEY
-            or OPENROUTER_API_KEY == "your_openrouter_api_key_here"
+            not GEMINI_API_KEY
+            or GEMINI_API_KEY == "your_gemini_api_key_here"
         ):
             demo_questions = generate_demo_questions(num_questions, difficulty)
             return jsonify(
                 {
                     "questions": demo_questions,
                     "demo_mode": True,
-                    "message": "Running in demo mode. Add your OpenRouter API key to .env for real AI-generated questions.",
+                    "message": "Running in demo mode. Add your Gemini API key to .env for real AI-generated questions.",
                 }
             )
 
@@ -338,7 +353,7 @@ def generate_quiz():
             chunk_questions = min(chunk_questions, remaining)
 
             prompt = build_prompt(chunk, chunk_questions, difficulty)
-            response = call_openrouter(prompt)
+            response = call_gemini(prompt)
 
             if response:
                 questions = parse_questions_from_response(response)
