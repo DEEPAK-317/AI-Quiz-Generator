@@ -75,6 +75,12 @@ errorDismiss.addEventListener('click', resetToUpload);
 
 // Functions
 function handleFileSelect(file) {
+    // Block files larger than 4 MB before hitting Vercel's limit
+    const MAX_SIZE_MB = 4;
+    if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+        showError(`PDF is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Please upload a PDF smaller than ${MAX_SIZE_MB} MB.`);
+        return;
+    }
     selectedFile = file;
     fileName.textContent = file.name;
     uploadArea.classList.add('has-file');
@@ -117,7 +123,7 @@ async function generateQuiz() {
 
     try {
         showLoading('Analyzing PDF content...');
-        
+
         const response = await fetch('/api/generate-quiz', {
             method: 'POST',
             body: formData
@@ -125,7 +131,19 @@ async function generateQuiz() {
 
         showLoading('Generating questions...');
 
-        const data = await response.json();
+        // Safely parse — Vercel can return plain text (e.g. "Request Entity Too Large")
+        // which breaks response.json() and causes "Unexpected token R" error
+        const contentType = response.headers.get('content-type') || '';
+        let data;
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            if (response.status === 413 || text.toLowerCase().includes('too large') || text.toLowerCase().includes('entity')) {
+                throw new Error('PDF is too large for the server. Please upload a smaller PDF (under 4 MB).');
+            }
+            throw new Error(text || `Server error (${response.status}). Please try again.`);
+        }
 
         if (!response.ok) {
             throw new Error(data.error || 'Failed to generate quiz');
